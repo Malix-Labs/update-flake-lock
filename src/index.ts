@@ -21,9 +21,12 @@ class UpdateFlakeLockAction extends DetSysAction {
     });
 
     this.rawCommitMessage = inputs.getString("commit-msg");
-    const explicitTrailers = inputs.getArrayOfStrings("commit-trailers", "newline");
+    const explicitTrailers =
+      inputs.getMultilineStringOrNull("commit-trailers") ?? [];
 
-    const { cleanMessage, extractedTrailers } = this.parseCommitMessage(this.rawCommitMessage);
+    const { cleanMessage, extractedTrailers } = this.parseCommitMessage(
+      this.rawCommitMessage,
+    );
     this.commitMessage = cleanMessage;
 
     // Combine explicit trailers and trailers extracted from commit-msg, ignoring empty lines
@@ -39,7 +42,10 @@ class UpdateFlakeLockAction extends DetSysAction {
     this.pathToFlakeDir = inputs.getStringOrNull("path-to-flake-dir");
   }
 
-  private parseCommitMessage(message: string): { cleanMessage: string; extractedTrailers: string[] } {
+  private parseCommitMessage(message: string): {
+    cleanMessage: string;
+    extractedTrailers: string[];
+  } {
     const lines = message.split("\n");
     const trailerRegex = /^[A-Za-z0-9-]+:\s+.+/;
     const extractedTrailers: string[] = [];
@@ -106,9 +112,15 @@ class UpdateFlakeLockAction extends DetSysAction {
         for (const trailer of this.commitTrailers) {
           trailerArgs.push("--trailer", trailer);
         }
-        const amendExitCode = await actionsExec.exec("git", trailerArgs, execOptions);
+        const amendExitCode = await actionsExec.exec(
+          "git",
+          trailerArgs,
+          execOptions,
+        );
         if (amendExitCode !== 0) {
-          actionsCore.setFailed(`non-zero exit code of ${amendExitCode} detected while amending git trailers`);
+          actionsCore.setFailed(
+            `non-zero exit code of ${amendExitCode} detected while amending git trailers`,
+          );
           return;
         }
       }

@@ -109384,10 +109384,34 @@ var UpdateFlakeLockAction = class extends DetSysAction {
       fetchStyle: "universal",
       requireNix: "fail"
     });
-    this.commitMessage = inputs_exports.getString("commit-msg");
+    this.rawCommitMessage = inputs_exports.getString("commit-msg");
+    const explicitTrailers = inputs_exports.getMultilineStringOrNull("commit-trailers") ?? [];
+    const { cleanMessage, extractedTrailers } = this.parseCommitMessage(
+      this.rawCommitMessage
+    );
+    this.commitMessage = cleanMessage;
+    const combined = [...extractedTrailers, ...explicitTrailers].map((t) => t.trim()).filter((t) => t.length > 0);
+    this.commitTrailers = Array.from(new Set(combined));
     this.flakeInputs = inputs_exports.getArrayOfStrings("inputs", "space");
     this.nixOptions = inputs_exports.getArrayOfStrings("nix-options", "space");
     this.pathToFlakeDir = inputs_exports.getStringOrNull("path-to-flake-dir");
+  }
+  parseCommitMessage(message) {
+    const lines = message.split("\n");
+    const trailerRegex = /^[A-Za-z0-9-]+:\s+.+/;
+    const extractedTrailers = [];
+    const cleanLines = [];
+    for (const line of lines) {
+      if (trailerRegex.test(line.trim())) {
+        extractedTrailers.push(line.trim());
+      } else {
+        cleanLines.push(line);
+      }
+    }
+    return {
+      cleanMessage: cleanLines.join("\n").trim(),
+      extractedTrailers
+    };
   }
   async main() {
     await this.update();
@@ -109406,6 +109430,7 @@ var UpdateFlakeLockAction = class extends DetSysAction {
         options: this.nixOptions,
         inputs: this.flakeInputs,
         message: this.commitMessage,
+        trailers: this.commitTrailers,
         args: nixCommandArgs
       })
     );
@@ -109420,6 +109445,23 @@ var UpdateFlakeLockAction = class extends DetSysAction {
       });
       setFailed(`non-zero exit code of ${exitCode} detected`);
     } else {
+      if (this.commitTrailers.length > 0) {
+        const trailerArgs = ["commit", "--amend", "--no-edit"];
+        for (const trailer of this.commitTrailers) {
+          trailerArgs.push("--trailer", trailer);
+        }
+        const amendExitCode = await exec_exec(
+          "git",
+          trailerArgs,
+          execOptions
+        );
+        if (amendExitCode !== 0) {
+          setFailed(
+            `non-zero exit code of ${amendExitCode} detected while amending git trailers`
+          );
+          return;
+        }
+      }
       info(`flake.lock file was successfully updated`);
     }
   }
