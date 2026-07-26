@@ -6,7 +6,9 @@ import { DetSysAction, inputs } from "detsys-ts";
 const EVENT_EXECUTION_FAILURE = "execution_failure";
 
 class UpdateFlakeLockAction extends DetSysAction {
+  private rawCommitMessage: string;
   private commitMessage: string;
+  private commitTrailers: string[];
   private nixOptions: string[];
   private flakeInputs: string[];
   private pathToFlakeDir: string | null;
@@ -18,10 +20,43 @@ class UpdateFlakeLockAction extends DetSysAction {
       requireNix: "fail",
     });
 
-    this.commitMessage = inputs.getString("commit-msg");
+    this.rawCommitMessage = inputs.getString("commit-msg");
+    const explicitTrailers = inputs.getArrayOfStrings("commit-trailers", "newline");
+
+    const { cleanMessage, extractedTrailers } = this.parseCommitMessage(this.rawCommitMessage);
+    this.commitMessage = cleanMessage;
+
+    // Combine explicit trailers and trailers extracted from commit-msg, ignoring empty lines
+    const combined = [...extractedTrailers, ...explicitTrailers]
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    // Deduplicate trailers while preserving order
+    this.commitTrailers = Array.from(new Set(combined));
+
     this.flakeInputs = inputs.getArrayOfStrings("inputs", "space");
     this.nixOptions = inputs.getArrayOfStrings("nix-options", "space");
     this.pathToFlakeDir = inputs.getStringOrNull("path-to-flake-dir");
+  }
+
+  private parseCommitMessage(message: string): { cleanMessage: string; extractedTrailers: string[] } {
+    const lines = message.split("\n");
+    const trailerRegex = /^[A-Za-z0-9-]+:\s+.+/;
+    const extractedTrailers: string[] = [];
+    const cleanLines: string[] = [];
+
+    for (const line of lines) {
+      if (trailerRegex.test(line.trim())) {
+        extractedTrailers.push(line.trim());
+      } else {
+        cleanLines.push(line);
+      }
+    }
+
+    return {
+      cleanMessage: cleanLines.join("\n").trim(),
+      extractedTrailers,
+    };
   }
 
   async main(): Promise<void> {
@@ -48,6 +83,7 @@ class UpdateFlakeLockAction extends DetSysAction {
         options: this.nixOptions,
         inputs: this.flakeInputs,
         message: this.commitMessage,
+        trailers: this.commitTrailers,
         args: nixCommandArgs,
       }),
     );
@@ -65,6 +101,17 @@ class UpdateFlakeLockAction extends DetSysAction {
       });
       actionsCore.setFailed(`non-zero exit code of ${exitCode} detected`);
     } else {
+      if (this.commitTrailers.length > 0) {
+        const trailerArgs = ["commit", "--amend", "--no-edit"];
+        for (const trailer of this.commitTrailers) {
+          trailerArgs.push("--trailer", trailer);
+        }
+        const amendExitCode = await actionsExec.exec("git", trailerArgs, execOptions);
+        if (amendExitCode !== 0) {
+          actionsCore.setFailed(`non-zero exit code of ${amendExitCode} detected while amending git trailers`);
+          return;
+        }
+      }
       actionsCore.info(`flake.lock file was successfully updated`);
     }
   }

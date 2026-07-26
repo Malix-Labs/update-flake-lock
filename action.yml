@@ -13,6 +13,10 @@ inputs:
     description: "The message provided with the commit"
     required: false
     default: "flake.lock: Update"
+  commit-trailers:
+    description: "A newline or comma-separated list of Git trailers (e.g. `Co-authored-by: Name <email@domain.com>`) to append to the commit."
+    required: false
+    default: ""
   base:
     description: "Sets the pull request base branch. Defaults to the branch checked out in the workflow."
     required: false
@@ -155,6 +159,7 @@ runs:
         INPUT_BASE: ${{ inputs.base }}
         INPUT_BRANCH: ${{ inputs.branch }}
         INPUT_COMMIT-MSG: ${{ inputs.commit-msg }}
+        INPUT_COMMIT-TRAILERS: ${{ inputs.commit-trailers }}
         INPUT_GIT-AUTHOR-EMAIL: ${{ inputs.git-author-email }}
         INPUT_GIT-AUTHOR-NAME: ${{ inputs.git-author-name }}
         INPUT_GIT-COMMITTER-EMAIL: ${{ inputs.git-committer-email }}

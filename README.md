@@ -173,6 +173,30 @@ jobs:
           git-committer-email: github-actions[bot]@users.noreply.github.com
 ```
 
+## Adding Git trailers
+
+You can append Git trailers (such as `Co-authored-by: Name <email@domain.com>`) to the generated commit using `commit-trailers`:
+
+```yaml
+name: update-flake-lock
+on:
+  workflow_dispatch:
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+      - name: Update flake.lock
+        uses: DeterminateSystems/update-flake-lock@main
+        with:
+          commit-trailers: |
+            Co-authored-by: Jane Doe <jane@example.com>
+```
+
 ## Running GitHub Actions CI
 
 GitHub Actions doesn't run workflows when a branch is pushed by or a PR is opened by a GitHub Action.
