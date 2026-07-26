@@ -109385,31 +109385,41 @@ var UpdateFlakeLockAction = class extends DetSysAction {
       requireNix: "fail"
     });
     this.rawCommitMessage = inputs_exports.getString("commit-msg");
-    const explicitTrailers = inputs_exports.getMultilineStringOrNull("commit-trailers") ?? [];
-    const { cleanMessage, extractedTrailers } = this.parseCommitMessage(
-      this.rawCommitMessage
-    );
-    this.commitMessage = cleanMessage;
-    const combined = [...extractedTrailers, ...explicitTrailers].map((t) => t.trim()).filter((t) => t.length > 0);
-    this.commitTrailers = Array.from(new Set(combined));
+    this.explicitTrailers = inputs_exports.getMultilineStringOrNull("commit-trailers") ?? [];
+    this.commitMessage = this.rawCommitMessage;
+    this.commitTrailers = [];
     this.flakeInputs = inputs_exports.getArrayOfStrings("inputs", "space");
     this.nixOptions = inputs_exports.getArrayOfStrings("nix-options", "space");
     this.pathToFlakeDir = inputs_exports.getStringOrNull("path-to-flake-dir");
   }
-  parseCommitMessage(message) {
-    const lines = message.split("\n");
-    const trailerRegex = /^[A-Za-z0-9-]+:\s+.+/;
-    const extractedTrailers = [];
-    const cleanLines = [];
-    for (const line of lines) {
-      if (trailerRegex.test(line.trim())) {
-        extractedTrailers.push(line.trim());
-      } else {
-        cleanLines.push(line);
-      }
+  async parseTrailersWithGit(message, cwd) {
+    let stdout = "";
+    const options = {
+      cwd,
+      listeners: {
+        stdout: (data) => {
+          stdout += data.toString();
+        }
+      },
+      input: Buffer.from(message),
+      ignoreReturnCode: true,
+      silent: true
+    };
+    const exitCode = await exec_exec(
+      "git",
+      ["interpret-trailers", "--parse"],
+      options
+    );
+    if (exitCode !== 0 || !stdout.trim()) {
+      return { cleanMessage: message, extractedTrailers: [] };
+    }
+    const extractedTrailers = stdout.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+    let cleanMessage = message;
+    for (const trailer of extractedTrailers) {
+      cleanMessage = cleanMessage.replace(trailer, "");
     }
     return {
-      cleanMessage: cleanLines.join("\n").trim(),
+      cleanMessage: cleanMessage.trim(),
       extractedTrailers
     };
   }
@@ -109420,6 +109430,14 @@ var UpdateFlakeLockAction = class extends DetSysAction {
   async post() {
   }
   async update() {
+    const cwd = this.pathToFlakeDir !== null ? this.pathToFlakeDir : void 0;
+    const { cleanMessage, extractedTrailers } = await this.parseTrailersWithGit(
+      this.rawCommitMessage,
+      cwd
+    );
+    this.commitMessage = cleanMessage;
+    const combined = [...extractedTrailers, ...this.explicitTrailers].map((t) => t.trim()).filter((t) => t.length > 0);
+    this.commitTrailers = Array.from(new Set(combined));
     const nixCommandArgs = makeNixCommandArgs(
       this.nixOptions,
       this.flakeInputs,
@@ -109435,7 +109453,7 @@ var UpdateFlakeLockAction = class extends DetSysAction {
       })
     );
     const execOptions = {
-      cwd: this.pathToFlakeDir !== null ? this.pathToFlakeDir : void 0,
+      cwd,
       ignoreReturnCode: true
     };
     const exitCode = await exec_exec("nix", nixCommandArgs, execOptions);

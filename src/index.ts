@@ -7,6 +7,7 @@ const EVENT_EXECUTION_FAILURE = "execution_failure";
 
 class UpdateFlakeLockAction extends DetSysAction {
   private rawCommitMessage: string;
+  private explicitTrailers: string[];
   private commitMessage: string;
   private commitTrailers: string[];
   private nixOptions: string[];
@@ -21,46 +22,55 @@ class UpdateFlakeLockAction extends DetSysAction {
     });
 
     this.rawCommitMessage = inputs.getString("commit-msg");
-    const explicitTrailers =
+    this.explicitTrailers =
       inputs.getMultilineStringOrNull("commit-trailers") ?? [];
-
-    const { cleanMessage, extractedTrailers } = this.parseCommitMessage(
-      this.rawCommitMessage,
-    );
-    this.commitMessage = cleanMessage;
-
-    // Combine explicit trailers and trailers extracted from commit-msg, ignoring empty lines
-    const combined = [...extractedTrailers, ...explicitTrailers]
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
-
-    // Deduplicate trailers while preserving order
-    this.commitTrailers = Array.from(new Set(combined));
+    this.commitMessage = this.rawCommitMessage;
+    this.commitTrailers = [];
 
     this.flakeInputs = inputs.getArrayOfStrings("inputs", "space");
     this.nixOptions = inputs.getArrayOfStrings("nix-options", "space");
     this.pathToFlakeDir = inputs.getStringOrNull("path-to-flake-dir");
   }
 
-  private parseCommitMessage(message: string): {
-    cleanMessage: string;
-    extractedTrailers: string[];
-  } {
-    const lines = message.split("\n");
-    const trailerRegex = /^[A-Za-z0-9-]+:\s+.+/;
-    const extractedTrailers: string[] = [];
-    const cleanLines: string[] = [];
+  private async parseTrailersWithGit(
+    message: string,
+    cwd?: string,
+  ): Promise<{ cleanMessage: string; extractedTrailers: string[] }> {
+    let stdout = "";
+    const options: actionsExec.ExecOptions = {
+      cwd,
+      listeners: {
+        stdout: (data: Buffer) => {
+          stdout += data.toString();
+        },
+      },
+      input: Buffer.from(message),
+      ignoreReturnCode: true,
+      silent: true,
+    };
 
-    for (const line of lines) {
-      if (trailerRegex.test(line.trim())) {
-        extractedTrailers.push(line.trim());
-      } else {
-        cleanLines.push(line);
-      }
+    const exitCode = await actionsExec.exec(
+      "git",
+      ["interpret-trailers", "--parse"],
+      options,
+    );
+
+    if (exitCode !== 0 || !stdout.trim()) {
+      return { cleanMessage: message, extractedTrailers: [] };
+    }
+
+    const extractedTrailers = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    let cleanMessage = message;
+    for (const trailer of extractedTrailers) {
+      cleanMessage = cleanMessage.replace(trailer, "");
     }
 
     return {
-      cleanMessage: cleanLines.join("\n").trim(),
+      cleanMessage: cleanMessage.trim(),
       extractedTrailers,
     };
   }
@@ -73,6 +83,19 @@ class UpdateFlakeLockAction extends DetSysAction {
   async post(): Promise<void> {}
 
   async update(): Promise<void> {
+    const cwd = this.pathToFlakeDir !== null ? this.pathToFlakeDir : undefined;
+    const { cleanMessage, extractedTrailers } = await this.parseTrailersWithGit(
+      this.rawCommitMessage,
+      cwd,
+    );
+    this.commitMessage = cleanMessage;
+
+    const combined = [...extractedTrailers, ...this.explicitTrailers]
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    this.commitTrailers = Array.from(new Set(combined));
+
     // Nix command of this form:
     // nix ${maybe nix options} flake ${"update" or "lock"} ${maybe --update-input flags} --commit-lock-file --commit-lockfile-summary ${commit message}
     // Example commands:
@@ -95,7 +118,7 @@ class UpdateFlakeLockAction extends DetSysAction {
     );
 
     const execOptions: actionsExec.ExecOptions = {
-      cwd: this.pathToFlakeDir !== null ? this.pathToFlakeDir : undefined,
+      cwd,
       ignoreReturnCode: true,
     };
 
