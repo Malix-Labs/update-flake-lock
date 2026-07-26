@@ -64,15 +64,49 @@ class UpdateFlakeLockAction extends DetSysAction {
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
 
-    let cleanMessage = message;
-    for (const trailer of extractedTrailers) {
-      cleanMessage = cleanMessage.replace(trailer, "");
+    const messageLines = message.split("\n");
+    // Protect subject line (line index 0) from being stripped as a trailer
+    if (messageLines.length <= 1) {
+      return {
+        cleanMessage: message,
+        extractedTrailers,
+      };
     }
 
+    // Multiline message: keep subject (line 0) untouched, strip extracted trailers from body
+    const cleanLines = messageLines.filter((line, idx) => {
+      if (idx === 0) return true;
+      return !extractedTrailers.includes(line.trim());
+    });
+
     return {
-      cleanMessage: cleanMessage.trim(),
+      cleanMessage: cleanLines.join("\n").trim(),
       extractedTrailers,
     };
+  }
+
+  private async getHeadSha(cwd?: string): Promise<string | null> {
+    let stdout = "";
+    const options: actionsExec.ExecOptions = {
+      cwd,
+      listeners: {
+        stdout: (data: Buffer) => {
+          stdout += data.toString();
+        },
+      },
+      ignoreReturnCode: true,
+      silent: true,
+    };
+
+    const exitCode = await actionsExec.exec(
+      "git",
+      ["rev-parse", "HEAD"],
+      options,
+    );
+    if (exitCode === 0 && stdout.trim()) {
+      return stdout.trim();
+    }
+    return null;
   }
 
   async main(): Promise<void> {
@@ -107,12 +141,14 @@ class UpdateFlakeLockAction extends DetSysAction {
       this.commitMessage,
     );
 
+    // Redact raw trailer values from debug logs to prevent leaking emails or user metadata
     actionsCore.debug(
       JSON.stringify({
         options: this.nixOptions,
         inputs: this.flakeInputs,
         message: this.commitMessage,
-        trailers: this.commitTrailers,
+        trailerCount: this.commitTrailers.length,
+        trailerKeys: this.commitTrailers.map((t) => t.split(":")[0].trim()),
         args: nixCommandArgs,
       }),
     );
@@ -122,6 +158,8 @@ class UpdateFlakeLockAction extends DetSysAction {
       ignoreReturnCode: true,
     };
 
+    const headBefore = await this.getHeadSha(cwd);
+
     const exitCode = await actionsExec.exec("nix", nixCommandArgs, execOptions);
 
     if (exitCode !== 0) {
@@ -130,7 +168,16 @@ class UpdateFlakeLockAction extends DetSysAction {
       });
       actionsCore.setFailed(`non-zero exit code of ${exitCode} detected`);
     } else {
-      if (this.commitTrailers.length > 0) {
+      const headAfter = await this.getHeadSha(cwd);
+
+      // Only amend HEAD if Nix actually created a new commit (headBefore !== headAfter)
+      if (
+        headBefore !== null &&
+        headAfter !== null &&
+        headBefore !== headAfter &&
+        this.commitTrailers.length > 0
+      ) {
+        actionsCore.info("Nix update commit created; applying git trailers...");
         const trailerArgs = ["commit", "--amend", "--no-edit"];
         for (const trailer of this.commitTrailers) {
           trailerArgs.push("--trailer", trailer);

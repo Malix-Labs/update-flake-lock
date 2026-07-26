@@ -64,6 +64,21 @@ test("Nix command arguments", () => {
         "just testing",
       ],
     },
+    {
+      inputs: {
+        nixOptions: [],
+        flakeInputs: [],
+        commitMessage: "Issue: fix the lockfile",
+      },
+      expected: [
+        "flake",
+        "update",
+        "--commit-lock-file",
+        "--option",
+        "commit-lockfile-summary",
+        "Issue: fix the lockfile",
+      ],
+    },
   ];
 
   testCases.forEach(({ inputs, expected }) => {

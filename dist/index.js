@@ -109414,14 +109414,43 @@ var UpdateFlakeLockAction = class extends DetSysAction {
       return { cleanMessage: message, extractedTrailers: [] };
     }
     const extractedTrailers = stdout.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
-    let cleanMessage = message;
-    for (const trailer of extractedTrailers) {
-      cleanMessage = cleanMessage.replace(trailer, "");
+    const messageLines = message.split("\n");
+    if (messageLines.length <= 1) {
+      return {
+        cleanMessage: message,
+        extractedTrailers
+      };
     }
+    const cleanLines = messageLines.filter((line, idx) => {
+      if (idx === 0) return true;
+      return !extractedTrailers.includes(line.trim());
+    });
     return {
-      cleanMessage: cleanMessage.trim(),
+      cleanMessage: cleanLines.join("\n").trim(),
       extractedTrailers
     };
+  }
+  async getHeadSha(cwd) {
+    let stdout = "";
+    const options = {
+      cwd,
+      listeners: {
+        stdout: (data) => {
+          stdout += data.toString();
+        }
+      },
+      ignoreReturnCode: true,
+      silent: true
+    };
+    const exitCode = await exec_exec(
+      "git",
+      ["rev-parse", "HEAD"],
+      options
+    );
+    if (exitCode === 0 && stdout.trim()) {
+      return stdout.trim();
+    }
+    return null;
   }
   async main() {
     await this.update();
@@ -109448,7 +109477,8 @@ var UpdateFlakeLockAction = class extends DetSysAction {
         options: this.nixOptions,
         inputs: this.flakeInputs,
         message: this.commitMessage,
-        trailers: this.commitTrailers,
+        trailerCount: this.commitTrailers.length,
+        trailerKeys: this.commitTrailers.map((t) => t.split(":")[0].trim()),
         args: nixCommandArgs
       })
     );
@@ -109456,6 +109486,7 @@ var UpdateFlakeLockAction = class extends DetSysAction {
       cwd,
       ignoreReturnCode: true
     };
+    const headBefore = await this.getHeadSha(cwd);
     const exitCode = await exec_exec("nix", nixCommandArgs, execOptions);
     if (exitCode !== 0) {
       this.recordEvent(EVENT_EXECUTION_FAILURE, {
@@ -109463,7 +109494,9 @@ var UpdateFlakeLockAction = class extends DetSysAction {
       });
       setFailed(`non-zero exit code of ${exitCode} detected`);
     } else {
-      if (this.commitTrailers.length > 0) {
+      const headAfter = await this.getHeadSha(cwd);
+      if (headBefore !== null && headAfter !== null && headBefore !== headAfter && this.commitTrailers.length > 0) {
+        info("Nix update commit created; applying git trailers...");
         const trailerArgs = ["commit", "--amend", "--no-edit"];
         for (const trailer of this.commitTrailers) {
           trailerArgs.push("--trailer", trailer);
